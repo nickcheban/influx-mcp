@@ -1,5 +1,8 @@
 # influx-mcp
 
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+
 MCP-сервер для InfluxDB 2.x, заточенный под Home Assistant long-term storage (`ha_data`-style bucket с тегом `entity_id`). Позволяет LLM (Claude и любому другому MCP-клиенту) читать историю сенсоров, искать аномалии и выполнять произвольные Flux-запросы через единый HTTP MCP-эндпоинт.
 
 ## Инструменты
@@ -33,6 +36,7 @@ Systemd-юнит — пример в [`deploy/influx-mcp.service`](deploy/influx
 - Авторизация — `Authorization: Bearer $MCP_SECRET` на каждый запрос к `/mcp`. Если `MCP_SECRET` не задан — сервер отвечает без проверки (годится только для локальной сети/VPN).
 - `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` — не полноценный OAuth-провайдер, а совместимая заглушка. На момент написания [custom-коннекторы claude.ai не поддерживают ввод статического API-ключа](https://claude.com/docs/connectors/building/authentication) — только настоящий OAuth 2.1 или полное отсутствие авторизации. Эта заглушка проходит OAuth-хендшейк UI коннектора, а реальную защиту обеспечивает Bearer-токен на `/mcp` (см. выше). Если вы подключаетесь через Claude Code CLI (`claude mcp add --header ...`) — вся эта заглушка не нужна, можно слать заголовок напрямую.
 - `redirect_uri` в `/oauth/authorize` проверяется по allowlist (`claude.ai`, `anthropic.com`, `console.anthropic.com`, `localhost`) — без этого был бы open redirect.
+- **Транспорт**: сервер сам не терминирует TLS — слушает голый HTTP. Если он доступен за пределами localhost/доверенной LAN (а тем более если вы подключаете его как custom-коннектор в claude.ai — там HTTPS обязателен), обязательно ставьте перед ним TLS-терминацию: Cloudflare Tunnel, Tailscale Funnel, nginx/Caddy + Let's Encrypt и т.п. Без этого Bearer-токен (`MCP_SECRET`) в заголовке `Authorization` уходит в сеть открытым текстом.
 
 ## Требования
 
