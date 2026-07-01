@@ -31,6 +31,13 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 
 Systemd unit example: [`deploy/influx-mcp.service`](deploy/influx-mcp.service) (adjust paths for your install).
 
+**Docker:**
+
+```bash
+docker build -t influx-mcp .
+docker run -p 8000:8000 --env-file .env influx-mcp
+```
+
 ## Security model
 
 - Auth is an `Authorization: Bearer $MCP_SECRET` header on every request to `/mcp`. If `MCP_SECRET` is unset, the server responds without checking auth (fine for a local network/VPN only).
