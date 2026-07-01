@@ -1,0 +1,14 @@
+[Unit]
+Description=InfluxDB MCP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/influx-mcp
+EnvironmentFile=/opt/influx-mcp/.env
+ExecStart=/opt/influx-mcp/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
