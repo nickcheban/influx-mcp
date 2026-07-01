@@ -3,46 +3,46 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
-MCP-сервер для InfluxDB 2.x, заточенный под Home Assistant long-term storage (`ha_data`-style bucket с тегом `entity_id`). Позволяет LLM (Claude и любому другому MCP-клиенту) читать историю сенсоров, искать аномалии и выполнять произвольные Flux-запросы через единый HTTP MCP-эндпоинт.
+MCP server for InfluxDB 2.x, tuned for Home Assistant long-term storage (an `ha_data`-style bucket with an `entity_id` tag). Lets any MCP client (Claude or otherwise) read sensor history, find anomalies, and run arbitrary Flux queries through a single HTTP MCP endpoint.
 
-## Инструменты
+## Tools
 
-| Инструмент | Описание |
+| Tool | Description |
 |---|---|
-| `list_measurements` | Список всех измерений в бакете с `entity_id` внутри каждого |
-| `list_fields` | Список полей для конкретного measurement с `entity_id` внутри него |
-| `get_last_value` | Последнее значение сенсора по `entity_id` |
-| `get_history` | История значений сенсора за период (с опциональной агрегацией по N минут) |
-| `query_flux` | Произвольный Flux-запрос к InfluxDB |
-| `find_anomalies` | Аномальные значения сенсора (отклонение от среднего более чем на N сигма) |
+| `list_measurements` | List of all measurements in the bucket, with `entity_id` inside each one |
+| `list_fields` | List of fields for a specific measurement, with `entity_id` inside it |
+| `get_last_value` | Latest value of a sensor by `entity_id` |
+| `get_history` | History of sensor values over a period (with optional aggregation over N minutes) |
+| `query_flux` | Arbitrary Flux query against InfluxDB |
+| `find_anomalies` | Anomalous sensor values (deviation from the mean by more than N sigma) |
 
-`query_flux` даёт полный read-доступ к базе — это осознанный компромисс ради гибкости, не баг. Обязательно закройте сервер `MCP_SECRET`, если он смотрит куда-то за пределы вашей локальной сети.
+`query_flux` gives full read access to the database — that's an intentional tradeoff for flexibility, not a bug. Make sure to lock the server down with `MCP_SECRET` if it's reachable from anywhere outside your local network.
 
-## Установка
+## Setup
 
 ```bash
 git clone <this-repo> influx-mcp && cd influx-mcp
 python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env       # заполните INFLUX_URL / INFLUX_TOKEN / INFLUX_ORG / INFLUX_BUCKET / MCP_SECRET
+cp .env.example .env       # fill in INFLUX_URL / INFLUX_TOKEN / INFLUX_ORG / INFLUX_BUCKET / MCP_SECRET
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
-Systemd-юнит — пример в [`deploy/influx-mcp.service`](deploy/influx-mcp.service) (поправьте пути под свою установку).
+Systemd unit example: [`deploy/influx-mcp.service`](deploy/influx-mcp.service) (adjust paths for your install).
 
 ## Security model
 
-- Авторизация — `Authorization: Bearer $MCP_SECRET` на каждый запрос к `/mcp`. Если `MCP_SECRET` не задан — сервер отвечает без проверки (годится только для локальной сети/VPN).
-- `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` — не полноценный OAuth-провайдер, а совместимая заглушка. На момент написания [custom-коннекторы claude.ai не поддерживают ввод статического API-ключа](https://claude.com/docs/connectors/building/authentication) — только настоящий OAuth 2.1 или полное отсутствие авторизации. Эта заглушка проходит OAuth-хендшейк UI коннектора, а реальную защиту обеспечивает Bearer-токен на `/mcp` (см. выше). Если вы подключаетесь через Claude Code CLI (`claude mcp add --header ...`) — вся эта заглушка не нужна, можно слать заголовок напрямую.
-- `redirect_uri` в `/oauth/authorize` проверяется по allowlist (`claude.ai`, `anthropic.com`, `console.anthropic.com`, `localhost`) — без этого был бы open redirect.
-- **Транспорт**: сервер сам не терминирует TLS — слушает голый HTTP. Если он доступен за пределами localhost/доверенной LAN (а тем более если вы подключаете его как custom-коннектор в claude.ai — там HTTPS обязателен), обязательно ставьте перед ним TLS-терминацию: Cloudflare Tunnel, Tailscale Funnel, nginx/Caddy + Let's Encrypt и т.п. Без этого Bearer-токен (`MCP_SECRET`) в заголовке `Authorization` уходит в сеть открытым текстом.
+- Auth is an `Authorization: Bearer $MCP_SECRET` header on every request to `/mcp`. If `MCP_SECRET` is unset, the server responds without checking auth (fine for a local network/VPN only).
+- `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` are not a real OAuth provider — just a compatible stub. As of this writing, [claude.ai custom connectors don't support pasting a static API key](https://claude.com/docs/connectors/building/authentication) — only full OAuth 2.1 or no auth at all. This stub satisfies the connector setup UI's OAuth handshake; the actual protection is the Bearer token on `/mcp` (see above). If you're connecting via Claude Code CLI (`claude mcp add --header ...`), you don't need this stub at all — just send the header directly.
+- `redirect_uri` in `/oauth/authorize` is checked against an allowlist (`claude.ai`, `anthropic.com`, `console.anthropic.com`, `localhost`) — without that it would be an open redirect.
+- **Transport**: the server does not terminate TLS itself — it listens on plain HTTP. If it's reachable beyond localhost/a trusted LAN (and especially if you're connecting it as a custom connector in claude.ai, where HTTPS is required), put TLS termination in front of it: Cloudflare Tunnel, Tailscale Funnel, nginx/Caddy + Let's Encrypt, etc. Without that, the Bearer token (`MCP_SECRET`) in the `Authorization` header goes out in plaintext.
 
-## Требования
+## Requirements
 
-- InfluxDB 2.x с bucket, где точки имеют тег `entity_id` (стандартная схема при экспорте из Home Assistant, например через `influxdb`-интеграцию HA).
+- InfluxDB 2.x with a bucket where points carry an `entity_id` tag (the standard schema when exporting from Home Assistant, e.g. via its `influxdb` integration).
 - Python 3.11+.
 
-## Лицензия
+## License
 
-MIT — см. [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

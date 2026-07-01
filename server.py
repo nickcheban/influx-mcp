@@ -18,65 +18,65 @@ def get_client():
 TOOLS = [
     {
         "name": "list_measurements",
-        "description": "Список всех измерений в бакете ha_data с entity_id внутри каждого",
+        "description": "List of all measurements in the bucket, with entity_id inside each one",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
     },
     {
         "name": "list_fields",
-        "description": "Список полей для конкретного measurement с entity_id внутри него",
+        "description": "List of fields for a specific measurement, with entity_id inside it",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "measurement": {"type": "string", "description": "Название measurement, например % или kWh"}
+                "measurement": {"type": "string", "description": "Measurement name, e.g. % or kWh"}
             },
             "required": ["measurement"]
         }
     },
     {
         "name": "get_last_value",
-        "description": "Последнее значение сенсора по entity_id",
+        "description": "Latest value of a sensor by entity_id",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "entity_id сенсора, например sensor.f1_battery"}
+                "entity_id": {"type": "string", "description": "Sensor entity_id, e.g. sensor.f1_battery"}
             },
             "required": ["entity_id"]
         }
     },
     {
         "name": "get_history",
-        "description": "История значений сенсора за период. Возвращает последние N точек из диапазона.",
+        "description": "History of sensor values over a period. Returns the last N points from the range.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "entity_id сенсора"},
-                "hours": {"type": "number", "description": "Глубина в часах (по умолчанию 24)"},
-                "limit": {"type": "number", "description": "Максимум точек (по умолчанию 1000)"},
-                "aggregate_minutes": {"type": "number", "description": "Агрегация по N минут (0 = без агрегации, по умолчанию 0)"}
+                "entity_id": {"type": "string", "description": "Sensor entity_id"},
+                "hours": {"type": "number", "description": "Depth in hours (default 24)"},
+                "limit": {"type": "number", "description": "Max points (default 1000)"},
+                "aggregate_minutes": {"type": "number", "description": "Aggregation window in N minutes (0 = no aggregation, default 0)"}
             },
             "required": ["entity_id"]
         }
     },
     {
         "name": "query_flux",
-        "description": "Произвольный Flux-запрос к InfluxDB. Возвращает все теги включая entity_id.",
+        "description": "Arbitrary Flux query against InfluxDB. Returns all tags including entity_id.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "flux": {"type": "string", "description": "Flux-запрос"}
+                "flux": {"type": "string", "description": "Flux query"}
             },
             "required": ["flux"]
         }
     },
     {
         "name": "find_anomalies",
-        "description": "Найти аномальные значения сенсора (отклонение от среднего более чем на N сигма)",
+        "description": "Find anomalous sensor values (deviation from the mean by more than N sigma)",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "entity_id сенсора"},
-                "hours": {"type": "number", "description": "Глубина в часах (по умолчанию 24)"},
-                "sigma": {"type": "number", "description": "Порог в сигмах (по умолчанию 3)"}
+                "entity_id": {"type": "string", "description": "Sensor entity_id"},
+                "hours": {"type": "number", "description": "Depth in hours (default 24)"},
+                "sigma": {"type": "number", "description": "Threshold in sigma (default 3)"}
             },
             "required": ["entity_id"]
         }
@@ -103,9 +103,9 @@ def validate_redirect_uri(uri: str):
         raise HTTPException(status_code=400, detail=f"redirect_uri not allowed: {uri}")
 
 def row_to_dict(row):
-    """Конвертирует строку InfluxDB в словарь, включая все теги.
-    Безопасна к Flux-трансформациям (mean, sum, count, join, pivot и т.п.),
-    которые могут убирать стандартные колонки _time/_field/_value/_measurement."""
+    """Converts an InfluxDB row to a dict, including all tags.
+    Safe against Flux transformations (mean, sum, count, join, pivot, etc.)
+    that can strip the standard _time/_field/_value/_measurement columns."""
     result = {}
 
     try:
@@ -128,9 +128,9 @@ def row_to_dict(row):
     skip = {"result", "table"}
     for k, v in row.values.items():
         if k.startswith("_value") and k != "_value":
-            # После join()/pivot() value-колонки могут переименовываться
-            # в _value_<suffix> (например _value_battery, _value_forecast).
-            # Снимаем ведущее подчёркивание, чтобы они не терялись.
+            # After join()/pivot(), value columns can be renamed to
+            # _value_<suffix> (e.g. _value_battery, _value_forecast).
+            # Strip the leading underscore so they aren't lost.
             result[k[1:]] = v
         elif not k.startswith("_") and k not in skip:
             result[k] = v
@@ -145,14 +145,14 @@ def validate_entity(eid):
         raise ValueError(f"Invalid entity_id: {eid}")
 
 def flux_escape(s):
-    """Экранирует значение для безопасной подстановки в Flux-строковый литерал "...".
-    Без этого произвольные кавычки/скобки в значении позволяют вырваться из литерала
-    и дописать собственный Flux-код (Flux injection)."""
+    """Escapes a value for safe interpolation into a Flux string literal "...".
+    Without this, arbitrary quotes/parentheses in the value would let an attacker
+    break out of the literal and append their own Flux code (Flux injection)."""
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 def strip_domain(eid):
-    """InfluxDB хранит entity_id без префикса домена (f1_battery, не sensor.f1_battery).
-    Если пришёл HA-style entity_id с точкой, отрезаем префикс перед фильтрацией в Flux."""
+    """InfluxDB stores entity_id without the domain prefix (f1_battery, not sensor.f1_battery).
+    If an HA-style entity_id with a dot comes in, strip the prefix before filtering in Flux."""
     if "." in eid:
         return eid.split(".", 1)[1]
     return eid
@@ -162,7 +162,7 @@ def run_tool(name, args):
         qa = client.query_api()
 
         if name == "list_measurements":
-            # Один запрос вместо N+1: получаем все пары measurement+entity_id сразу
+            # Single query instead of N+1: fetch all measurement+entity_id pairs at once
             flux = f'''
 from(bucket: "{INFLUX_BUCKET}")
   |> range(start: -30d)
@@ -209,7 +209,7 @@ schema.tagValues(
             eid = args["entity_id"]
             validate_entity(eid)
             flux_eid = strip_domain(eid)
-            # -365d вместо -7d чтобы найти даже редко обновляемые сенсоры
+            # -365d instead of -7d, to find even rarely-updated sensors
             flux = f'''from(bucket: "{INFLUX_BUCKET}")
   |> range(start: -365d)
   |> filter(fn: (r) => r["entity_id"] == "{flux_eid}")
@@ -269,9 +269,9 @@ schema.tagValues(
             all_rows = [row_to_dict(row) for table in tables for row in table.records]
 
             if len(all_rows) < 3:
-                return {"entity_id": eid, "anomalies": [], "count": 0, "error": "Недостаточно данных"}
+                return {"entity_id": eid, "anomalies": [], "count": 0, "error": "Not enough data"}
 
-            # Защита от нечисловых значений (on/off/unavailable и т.д.)
+            # Guard against non-numeric values (on/off/unavailable, etc.)
             values = []
             for r in all_rows:
                 try:
@@ -280,7 +280,7 @@ schema.tagValues(
                     pass
 
             if len(values) < 3:
-                return {"entity_id": eid, "anomalies": [], "count": 0, "error": "Недостаточно числовых значений"}
+                return {"entity_id": eid, "anomalies": [], "count": 0, "error": "Not enough numeric values"}
 
             nums = [v for _, v in values]
             mean = sum(nums) / len(nums)
