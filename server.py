@@ -313,7 +313,7 @@ schema.tagValues(
 
 @app.get("/")
 async def root():
-    return {"status": "influx-mcp running", "version": "2.1.0", "org": INFLUX_ORG, "bucket": INFLUX_BUCKET}
+    return {"status": "influx-mcp running", "version": "2.2.0", "org": INFLUX_ORG, "bucket": INFLUX_BUCKET}
 
 @app.get("/mcp")
 async def mcp_info(request: Request):
@@ -321,7 +321,7 @@ async def mcp_info(request: Request):
     return {
         "protocolVersion": "2024-11-05",
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "influx-mcp", "version": "2.1.0"}
+        "serverInfo": {"name": "influx-mcp", "version": "2.2.0"}
     }
 
 @app.post("/mcp")
@@ -335,7 +335,7 @@ async def mcp_handler(request: Request):
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "influx-mcp", "version": "2.1.0"}
+            "serverInfo": {"name": "influx-mcp", "version": "2.2.0"}
         }})
     elif method == "notifications/initialized":
         from fastapi.responses import Response
@@ -349,12 +349,18 @@ async def mcp_handler(request: Request):
         try:
             result = run_tool(tool_name, tool_args)
             return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
-                "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]
+                "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
+                "isError": False
             }})
         except Exception as e:
-            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {
-                "code": -32603,
-                "message": str(e)
+            # Tool execution errors are reported inside a normal result with
+            # isError: true, per the MCP spec -- not as a JSON-RPC protocol
+            # error (-32603 is meant for transport-level failures). This gives
+            # the caller (Claude) the actual error text as a tool result it
+            # can reason about, same as pihole-mcp/ruckus-mcp already do.
+            return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": f"Error: {str(e)}"}],
+                "isError": True
             }})
     else:
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {
