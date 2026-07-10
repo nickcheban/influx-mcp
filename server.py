@@ -1,6 +1,7 @@
 import os, json
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
 from influxdb_client import InfluxDBClient
 
 INFLUX_URL = os.getenv("INFLUX_URL", "http://192.168.1.10:8086")
@@ -347,7 +348,10 @@ async def mcp_handler(request: Request):
         tool_name = params.get("name")
         tool_args = params.get("arguments", {})
         try:
-            result = run_tool(tool_name, tool_args)
+            # run_tool does blocking synchronous I/O against InfluxDB -- run it
+            # in a thread pool so it doesn't block the event loop (same pattern
+            # already used in mikrotik-mcp/zaborona-mcp).
+            result = await run_in_threadpool(run_tool, tool_name, tool_args)
             return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
                 "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
                 "isError": False
