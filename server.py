@@ -2,7 +2,8 @@ import os, json
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 INFLUX_URL = os.getenv("INFLUX_URL", "http://192.168.1.10:8086")
 INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "")
@@ -80,6 +81,35 @@ TOOLS = [
                 "sigma": {"type": "number", "description": "Threshold in sigma (default 3)"}
             },
             "required": ["entity_id"]
+        }
+    },
+    {
+        "name": "write_value",
+        "description": "Write a single value point to InfluxDB for a sensor. measurement is the schema's unit bucket (e.g. '%', 'kWh', 'W'), not the entity_id -- if unsure which measurement a sensor uses, check list_measurements or get_last_value first.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "Sensor entity_id, e.g. sensor.f1_battery"},
+                "measurement": {"type": "string", "description": "Measurement (unit bucket), e.g. % or kWh -- see list_measurements"},
+                "value": {"type": ["number", "string"], "description": "Value to write"},
+                "field": {"type": "string", "description": "Field name (default 'value')"},
+                "time": {"type": "number", "description": "Unix timestamp in seconds (default: current time)"}
+            },
+            "required": ["entity_id", "measurement", "value"]
+        }
+    },
+    {
+        "name": "correlate",
+        "description": "Pearson correlation coefficient between two sensors over a period -- both series are aligned to a common time grid via averaging before comparison.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_id_a": {"type": "string", "description": "First sensor's entity_id"},
+                "entity_id_b": {"type": "string", "description": "Second sensor's entity_id"},
+                "hours": {"type": "number", "description": "Depth in hours (default 24)"},
+                "aggregate_minutes": {"type": "number", "description": "Averaging window in minutes used to align the two series (default 15)"}
+            },
+            "required": ["entity_id_a", "entity_id_b"]
         }
     }
 ]
@@ -308,13 +338,126 @@ schema.tagValues(
                 "count": len(anomalies)
             }
 
+        elif name == "write_value":
+            eid = args["entity_id"]
+            measurement = args["measurement"]
+            raw_value = args["value"]
+            field = args.get("field") or "value"
+            validate_entity(eid)
+            flux_eid = strip_domain(eid)
+
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                value = str(raw_value)
+
+            point = Point(measurement).tag("entity_id", flux_eid).field(field, value)
+            time_arg = args.get("time")
+            if time_arg is not None:
+                try:
+                    point = point.time(int(float(time_arg)), WritePrecision.S)
+                except (TypeError, ValueError):
+                    raise ValueError(f"'time' must be a unix timestamp in seconds, got: {time_arg!r}")
+
+            write_api = client.write_api(write_options=SYNCHRONOUS)
+            write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+
+            return {
+                "status": "ok",
+                "entity_id": eid,
+                "measurement": measurement,
+                "field": field,
+                "value": value,
+                "time": time_arg if time_arg is not None else "now",
+            }
+
+        elif name == "correlate":
+            eid_a = args["entity_id_a"]
+            eid_b = args["entity_id_b"]
+            validate_entity(eid_a)
+            validate_entity(eid_b)
+            flux_a = strip_domain(eid_a)
+            flux_b = strip_domain(eid_b)
+            hours = int(float(args.get("hours") or 24))
+            agg = max(1, int(float(args.get("aggregate_minutes") or 15)))
+
+            def _fetch_aligned_series(flux_eid):
+                flux = f'''from(bucket: "{INFLUX_BUCKET}")
+  |> range(start: -{hours}h)
+  |> filter(fn: (r) => r["entity_id"] == "{flux_eid}" and r["_field"] == "value")
+  |> aggregateWindow(every: {agg}m, fn: mean, createEmpty: false)
+  |> sort(columns: ["_time"])'''
+                tables = qa.query(flux)
+                series = {}
+                for table in tables:
+                    for row in table.records:
+                        try:
+                            series[str(row.get_time())] = float(row.get_value())
+                        except (TypeError, ValueError):
+                            pass
+                return series
+
+            series_a = _fetch_aligned_series(flux_a)
+            series_b = _fetch_aligned_series(flux_b)
+            common_times = sorted(set(series_a) & set(series_b))
+
+            if len(common_times) < 3:
+                return {
+                    "entity_id_a": eid_a,
+                    "entity_id_b": eid_b,
+                    "aligned_points": len(common_times),
+                    "error": "Not enough time-aligned points to correlate (need at least 3)",
+                }
+
+            xs = [series_a[t] for t in common_times]
+            ys = [series_b[t] for t in common_times]
+            n = len(xs)
+            mean_x = sum(xs) / n
+            mean_y = sum(ys) / n
+            cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / n
+            std_x = (sum((x - mean_x) ** 2 for x in xs) / n) ** 0.5
+            std_y = (sum((y - mean_y) ** 2 for y in ys) / n) ** 0.5
+
+            if std_x == 0 or std_y == 0:
+                return {
+                    "entity_id_a": eid_a,
+                    "entity_id_b": eid_b,
+                    "aligned_points": n,
+                    "correlation": 0.0,
+                    "note": "One series is constant over this period (zero variance) -- correlation is undefined, returning 0",
+                }
+
+            r = cov / (std_x * std_y)
+            r = max(-1.0, min(1.0, r))  # guard against rounding error outside [-1, 1]
+
+            abs_r = abs(r)
+            if abs_r >= 0.7:
+                strength = "strong"
+            elif abs_r >= 0.4:
+                strength = "moderate"
+            elif abs_r >= 0.2:
+                strength = "weak"
+            else:
+                strength = "negligible"
+
+            return {
+                "entity_id_a": eid_a,
+                "entity_id_b": eid_b,
+                "hours": hours,
+                "aggregate_minutes": agg,
+                "aligned_points": n,
+                "correlation": round(r, 4),
+                "strength": strength,
+                "direction": "positive" if r > 0 else ("negative" if r < 0 else "none"),
+            }
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
 
 @app.get("/")
 async def root():
-    return {"status": "influx-mcp running", "version": "2.2.0", "org": INFLUX_ORG, "bucket": INFLUX_BUCKET}
+    return {"status": "influx-mcp running", "version": "2.3.0", "org": INFLUX_ORG, "bucket": INFLUX_BUCKET}
 
 @app.get("/mcp")
 async def mcp_info(request: Request):
@@ -322,7 +465,7 @@ async def mcp_info(request: Request):
     return {
         "protocolVersion": "2024-11-05",
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "influx-mcp", "version": "2.2.0"}
+        "serverInfo": {"name": "influx-mcp", "version": "2.3.0"}
     }
 
 @app.post("/mcp")
@@ -336,7 +479,7 @@ async def mcp_handler(request: Request):
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "influx-mcp", "version": "2.2.0"}
+            "serverInfo": {"name": "influx-mcp", "version": "2.3.0"}
         }})
     elif method == "notifications/initialized":
         from fastapi.responses import Response
